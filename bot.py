@@ -139,7 +139,7 @@ schedule = {
             ],
     }
     }
-
+temporary_changes = {}
 subscribers = set()
 
 # ======================
