@@ -232,6 +232,9 @@ def get_local_now():
         return datetime.now() + timedelta(hours=TIMEZONE_OFFSET_HOURS)
     return datetime.now()
 
+def get_local_date():
+    return get_local_now().date()
+
 
 # ======================
 # ✅ FIX #2: Ветки
@@ -355,7 +358,7 @@ def get_subjects_keyboard(subjects):
 # ======================
 def get_week_type(target_date=None):
     if target_date is None:
-        target_date = date.today()
+        target_date = get_local_date()  # ✅ Было: date.today()
     delta = (target_date - EVEN_WEEK_START).days
     weeks = delta // 7
     return "even" if weeks % 2 == 0 else "odd"
@@ -363,7 +366,7 @@ def get_week_type(target_date=None):
 
 def get_schedule(target_date=None):
     if target_date is None:
-        target_date = date.today()
+        target_date = get_local_date()  # ✅ Было: date.today()
     week_type = get_week_type(target_date)
     day_name = target_date.strftime("%A")
     base = schedule.get(week_type, {}).get(day_name, [])
@@ -417,7 +420,7 @@ def find_subject_occurrences(subject_name):
 # ======================
 def get_current_class():
     now = get_local_now()
-    today = date.today()
+    today = get_local_now()
     if now.hour < 3:
         return None, None
     lessons = get_schedule(today)
@@ -483,7 +486,7 @@ async def current_class(message: Message):
 @dp.message(F.text == "📖 Расписание сегодня")
 async def today_schedule(message: Message):
     if not is_allowed_thread(message): return
-    lessons = get_schedule(date.today())
+    lessons = get_schedule(get_local_date())
     if not lessons:
         await message.answer(random.choice(NO_CLASSES_PHRASES));
         return
@@ -495,8 +498,9 @@ async def today_schedule(message: Message):
 
 @dp.message(F.text == "📅 Расписание завтра")
 async def tomorrow_schedule(message: Message):
-    if not is_allowed_thread(message): return
-    tomorrow = date.today() + timedelta(days=1)
+    if not is_allowed_thread(message):
+        return
+    tomorrow = get_local_date() + timedelta(days=1)  # ✅ Было: date.today()
     lessons = get_schedule(tomorrow)
     if not lessons:
         await message.answer(random.choice(NO_CLASSES_PHRASES));
@@ -743,7 +747,7 @@ async def save_name(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка контекста");
         await state.clear();
         return
-    today = date.today();
+    today = get_local_date();
     target_date = None
     for i in range(7):
         check_date = today + timedelta(days=i)
@@ -783,7 +787,7 @@ async def save_room(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка контекста");
         await state.clear();
         return
-    today = date.today();
+    today = get_local_date();
     target_date = None
     for i in range(7):
         check_date = today + timedelta(days=i)
@@ -823,7 +827,7 @@ async def save_teacher(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка контекста");
         await state.clear();
         return
-    today = date.today();
+    today = get_local_date();
     target_date = None
     for i in range(7):
         check_date = today + timedelta(days=i)
@@ -874,7 +878,7 @@ async def save_time(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка контекста");
         await state.clear();
         return
-    today = date.today();
+    today = get_local_date();
     target_date = None
     for i in range(7):
         check_date = today + timedelta(days=i)
@@ -923,7 +927,7 @@ async def admin_delete_lesson(callback: CallbackQuery):
     day_name = parts[2];
     idx = int(parts[3])
     day_en = DAY_RU_TO_EN.get(day_name, day_name)
-    today = date.today();
+    today = get_local_date();
     target_date = None
     for i in range(7):
         check_date = today + timedelta(days=i)
@@ -956,7 +960,7 @@ async def notifier():
     global notified_lessons
     while True:
         now = get_local_now()
-        today = date.today()
+        today = get_local_date()  # ✅ Было: date.today()
         lessons = get_schedule(today)
         for idx, lesson in enumerate(lessons):
             start_dt = datetime.combine(today, lesson["start"])
@@ -981,7 +985,7 @@ async def notifier():
 async def reset_changes():
     while True:
         now = get_local_now()
-        today = date.today()
+        today = get_local_date()  # ✅ Было: date.today()
         if now.hour == 0 and now.minute < 1:
             temporary_changes.clear();
             notified_lessons.clear()
@@ -1021,5 +1025,41 @@ async def main():
     await dp.start_polling(bot)
 
 
+@dp.message(Command("time"))
+async def debug_time(message: Message):
+    if message.from_user.id not in ADMIN_ID:
+        return
+
+    server_now = datetime.now()
+    bot_now = get_local_now()
+    moscow_now = datetime.now() + timedelta(hours=3)  # Примерное МСК
+
+    await message.answer(
+        f"🖥 Время сервера: <code>{server_now.strftime('%H:%M:%S')}</code>\n"
+        f"🤖 Время бота: <code>{bot_now.strftime('%H:%M:%S')}</code>\n"
+        f"🇷🇺 Примерное МСК: <code>{moscow_now.strftime('%H:%M:%S')}</code>\n"
+        f"⚙️ Текущий оффсет: <code>{TIMEZONE_OFFSET_HOURS}</code>",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@dp.message(Command("getid"))
+async def get_thread_id(message: Message):
+    # Проверка на админа (чтобы обычные юзеры не спамили)
+    if message.from_user.id not in ADMIN_ID:
+        return
+
+    thread_id = message.message_thread_id if message.is_topic_message else "Нет (обычный чат)"
+    chat_id = message.chat.id
+
+    await message.answer(
+        f"🆔 ID чата: <code>{chat_id}</code>\n"
+        f"🧵 ID ветки: <code>{thread_id}</code>",
+        parse_mode=ParseMode.HTML
+    )
 if __name__ == "__main__":
+
     asyncio.run(main())
+
+
+
