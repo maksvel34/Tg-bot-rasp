@@ -26,10 +26,10 @@ EVEN_WEEK_START = date(2026, 2, 9)
 SUBSCRIBERS_FILE = "subscribers.json"
 
 # ✅ Часовой пояс (0 = время сервера, 3 = Москва)
-TIMEZONE_OFFSET_HOURS = 0
+TIMEZONE_OFFSET_HOURS = 3
 
 # ✅ ID ветки (None = работать везде, число = только в конкретной ветке)
-ALLOWED_THREAD_ID = 6
+ALLOWED_THREAD_ID = 5
 
 # Список фраз
 NO_CLASSES_PHRASES = [
