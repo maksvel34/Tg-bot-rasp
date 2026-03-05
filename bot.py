@@ -416,39 +416,59 @@ def find_subject_occurrences(subject_name):
 
 
 # ======================
-# 📊 ТЕКУЩАЯ ПАРА
+# 📊 ТЕКУЩАЯ ПАРА + ОКНА
 # ======================
 def get_current_class():
-    try:
-        now = get_local_now()
-        today = get_local_date()  # ✅ FIX: используем date
-        lessons = get_schedule(today)
-        
-        if not lessons:
-            return None, None
-        
-        last_lesson_end = None
-        for lesson in lessons:
-            end_dt = datetime.combine(today, lesson["end"])
-            if last_lesson_end is None or end_dt > last_lesson_end:
-                last_lesson_end = end_dt
-        
-        if last_lesson_end and now > last_lesson_end:
-            return None, None
-        
-        for lesson in lessons:
-            start_dt = datetime.combine(today, lesson["start"])
-            end_dt = datetime.combine(today, lesson["end"])
-            if start_dt <= now <= end_dt:
-                return "ongoing", lesson
-            if now < start_dt:
-                minutes = int((start_dt - now).total_seconds() // 60)
-                return minutes, lesson
-        
+    now = get_local_now()
+    today = get_local_date()
+    
+    # ✅ Убрал проверку hour < 3 - теперь работает круглосуточно
+    lessons = get_schedule(today)
+    
+    if not lessons:
         return None, None
-    except Exception as e:
-        print(f"Ошибка в get_current_class: {e}")
+    
+    # Сортируем уроки по времени начала
+    lessons_sorted = sorted(lessons, key=lambda x: x["start"])
+    
+    # Проверяем каждый урок
+    for i, lesson in enumerate(lessons_sorted):
+        start_dt = datetime.combine(today, lesson["start"])
+        end_dt = datetime.combine(today, lesson["end"])
+        
+        # ✅ Если сейчас идёт урок
+        if start_dt <= now <= end_dt:
+            return "ongoing", lesson
+        
+        # ✅ Если урок ещё не начался
+        if now < start_dt:
+            # Проверяем, есть ли окно перед этим уроком
+            if i > 0:
+                prev_lesson = lessons_sorted[i - 1]
+                prev_end = datetime.combine(today, prev_lesson["end"])
+                
+                # Если между уроками есть промежуток > 10 минут
+                gap_minutes = int((start_dt - prev_end).total_seconds() // 60)
+                if gap_minutes > 30 and now > prev_end:
+                    return "break", {
+                        "name": f"⏸️ Окно ({gap_minutes} мин)",
+                        "room": "—",
+                        "teacher": "—",
+                        "start": prev_lesson["end"],
+                        "end": lesson["start"],
+                        "is_break": True  # ✅ Метка что это окно
+                    }
+            
+            minutes = int((start_dt - now).total_seconds() // 60)
+            return minutes, lesson
+    
+    # ✅ После последнего урока
+    last_lesson = lessons_sorted[-1]
+    last_end = datetime.combine(today, last_lesson["end"])
+    if now > last_end:
         return None, None
+    
+    return None, None
 
 
 # ======================
@@ -487,40 +507,82 @@ async def current_class(message: Message):
     
     if status == "ongoing":
         text = f"🟢 Сейчас идёт:\n<b>{lesson['name']}</b>\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
+    elif status == "break":  # ✅ Новая ветка для окон
+        text = f"⏸️ <b>Сейчас окно между парами</b>\n⏰ Следующая пара через {lesson.get('duration', 'скоро')}\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
     elif isinstance(status, int):
         text = f"⏳ До {lesson['name']} осталось {status} мин\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
     else:
         text = random.choice(NO_CLASSES_PHRASES)
     
-    await message.answer(text, parse_mode=ParseMode.HTML)  # ✅ Добавьте parse_mode
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 @dp.message(F.text == "📖 Расписание сегодня")
 async def today_schedule(message: Message):
-    if not is_allowed_thread(message): return
-    lessons = get_schedule(get_local_date())
-    if not lessons:
-        await message.answer(random.choice(NO_CLASSES_PHRASES));
+    if not is_allowed_thread(message): 
         return
-    text = "<b>📖 Сегодня:</b>\n\n"
-    for lesson in lessons:
-        text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n📚 {lesson['name']}\n🚪 {lesson['room']} | 👨‍🏫 {lesson['teacher']}\n\n"
-    await message.answer(text)
-
+    
+    lessons = get_schedule(get_local_date())
+    
+    if not lessons:
+        await message.answer(random.choice(NO_CLASSES_PHRASES))
+        return
+    
+    # ✅ Сортируем и добавляем окна между парами
+    lessons_sorted = sorted(lessons, key=lambda x: x["start"])
+    
+    text = "<b>📖 Сегодня:</b>\n"
+    
+    for i, lesson in enumerate(lessons_sorted):
+        text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
+        text += f"📚 {lesson['name']}\n"
+        text += f"🚪 {lesson['room']} | 👨‍🏫 {lesson['teacher']}\n\n"
+        
+        # ✅ Добавляем окно между парами (если есть промежуток > 10 мин)
+        if i < len(lessons_sorted) - 1:
+            next_lesson = lessons_sorted[i + 1]
+            gap_seconds = (datetime.combine(get_local_date(), next_lesson["start"]) - 
+                          datetime.combine(get_local_date(), lesson["end"])).total_seconds()
+            gap_minutes = int(gap_seconds // 60)
+            
+            if gap_minutes > 30:  # ✅ Показываем окна больше 10 минут
+                text += f"⏸️ <b>Окно: {gap_minutes} мин</b>\n\n"
+    
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 @dp.message(F.text == "📅 Расписание завтра")
 async def tomorrow_schedule(message: Message):
-    if not is_allowed_thread(message):
+    if not is_allowed_thread(message): 
         return
-    tomorrow = get_local_date() + timedelta(days=1)  # ✅ Было: date.today()
+    
+    tomorrow = get_local_date() + timedelta(days=1)
     lessons = get_schedule(tomorrow)
+    
     if not lessons:
-        await message.answer(random.choice(NO_CLASSES_PHRASES));
+        await message.answer(random.choice(NO_CLASSES_PHRASES))
         return
+    
+    # ✅ Сортируем уроки по времени начала
+    lessons_sorted = sorted(lessons, key=lambda x: x["start"])
+    
     text = "<b>📅 Завтра:</b>\n\n"
-    for lesson in lessons:
-        text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n📚 {lesson['name']}\n🚪 {lesson['room']} | 👨‍🏫 {lesson['teacher']}\n\n"
-    await message.answer(text)
+    
+    for i, lesson in enumerate(lessons_sorted):
+        text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
+        text += f"📚 {lesson['name']}\n"
+        text += f"🚪 {lesson['room']} | 👨‍🏫 {lesson['teacher']}\n\n"
+        
+        # ✅ Добавляем окно между парами (если есть промежуток > 10 мин)
+        if i < len(lessons_sorted) - 1:
+            next_lesson = lessons_sorted[i + 1]
+            gap_seconds = (datetime.combine(tomorrow, next_lesson["start"]) - 
+                          datetime.combine(tomorrow, lesson["end"])).total_seconds()
+            gap_minutes = int(gap_seconds // 60)
+            
+            if gap_minutes > 30:  # ✅ Показываем окна больше 10 минут
+                text += f"⏸️ <b>Окно: {gap_minutes} мин</b>\n\n"
+    
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 @dp.message(F.text == "🔔 Подписаться на уведомления")
@@ -972,22 +1034,35 @@ async def notifier():
     global notified_lessons
     while True:
         now = get_local_now()
-        today = get_local_date()  # ✅ Было: date.today()
+        today = get_local_date()
         lessons = get_schedule(today)
+        
         for idx, lesson in enumerate(lessons):
+            # ✅ ПРОПУСКАЕМ уведомления если это окно (метка is_break)
+            if lesson.get("is_break", False):
+                continue
+            
             start_dt = datetime.combine(today, lesson["start"])
             diff = (start_dt - now).total_seconds()
             lesson_key = f"{today}_{idx}"
+            
+            # ✅ Уведомляем только за 5 минут до НАЧАЛА УРОКА (не окна!)
             if 0 < diff <= 300 and lesson_key not in notified_lessons:
                 for user in subscribers:
                     try:
-                        await bot.send_message(user,
-                                               f"🔔 Через 5 мин: {lesson['name']}\n🚪 {lesson['room']}\n⏰ {lesson['start'].strftime('%H:%M')}")
+                        await bot.send_message(
+                            user,
+                            f"🔔 Через 5 мин: {lesson['name']}\n"
+                            f"🚪 {lesson['room']}\n"
+                            f"⏰ {lesson['start'].strftime('%H:%M')}"
+                        )
                     except:
                         pass
                 notified_lessons.add(lesson_key)
+            
             elif diff < 0 and lesson_key in notified_lessons:
                 notified_lessons.discard(lesson_key)
+        
         await asyncio.sleep(60)
 
 
