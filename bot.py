@@ -419,29 +419,36 @@ def find_subject_occurrences(subject_name):
 # 📊 ТЕКУЩАЯ ПАРА
 # ======================
 def get_current_class():
-    now = get_local_now()
-    today = get_local_now()
-    if now.hour < 3:
+    try:
+        now = get_local_now()
+        today = get_local_date()  # ✅ FIX: используем date
+        lessons = get_schedule(today)
+        
+        if not lessons:
+            return None, None
+        
+        last_lesson_end = None
+        for lesson in lessons:
+            end_dt = datetime.combine(today, lesson["end"])
+            if last_lesson_end is None or end_dt > last_lesson_end:
+                last_lesson_end = end_dt
+        
+        if last_lesson_end and now > last_lesson_end:
+            return None, None
+        
+        for lesson in lessons:
+            start_dt = datetime.combine(today, lesson["start"])
+            end_dt = datetime.combine(today, lesson["end"])
+            if start_dt <= now <= end_dt:
+                return "ongoing", lesson
+            if now < start_dt:
+                minutes = int((start_dt - now).total_seconds() // 60)
+                return minutes, lesson
+        
         return None, None
-    lessons = get_schedule(today)
-    if not lessons:
+    except Exception as e:
+        print(f"Ошибка в get_current_class: {e}")
         return None, None
-    last_lesson_end = None
-    for lesson in lessons:
-        end_dt = datetime.combine(today, lesson["end"])
-        if last_lesson_end is None or end_dt > last_lesson_end:
-            last_lesson_end = end_dt
-    if last_lesson_end and now > last_lesson_end:
-        return None, None
-    for lesson in lessons:
-        start_dt = datetime.combine(today, lesson["start"])
-        end_dt = datetime.combine(today, lesson["end"])
-        if start_dt <= now <= end_dt:
-            return "ongoing", lesson
-        if now < start_dt:
-            minutes = int((start_dt - now).total_seconds() // 60)
-            return minutes, lesson
-    return None, None
 
 
 # ======================
@@ -472,15 +479,20 @@ async def start_handler(message: Message):
 # ======================
 @dp.message(F.text == "📌 Какая сейчас пара?")
 async def current_class(message: Message):
-    if not is_allowed_thread(message): return
+    if not is_allowed_thread(message): 
+        await message.answer("❌ Эта команда доступна только в разрешённой ветке")
+        return
+    
     status, lesson = get_current_class()
+    
     if status == "ongoing":
         text = f"🟢 Сейчас идёт:\n<b>{lesson['name']}</b>\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
     elif isinstance(status, int):
         text = f"⏳ До {lesson['name']} осталось {status} мин\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
     else:
         text = random.choice(NO_CLASSES_PHRASES)
-    await message.answer(text)
+    
+    await message.answer(text, parse_mode=ParseMode.HTML)  # ✅ Добавьте parse_mode
 
 
 @dp.message(F.text == "📖 Расписание сегодня")
