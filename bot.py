@@ -21,7 +21,7 @@ from aiogram.enums import ChatType
 # ======================
 TOKEN = "8628918090:AAE-WeIyeu8LVkIe5_LZDEbvfycleAzViB8"
 # 🔧 Впишите сюда ID админов
-ADMIN_ID = [1071264428,7237228038]
+ADMIN_ID = [1071264428, 7237228038]
 EVEN_WEEK_START = date(2026, 2, 9)
 SUBSCRIBERS_FILE = "subscribers.json"
 
@@ -164,6 +164,10 @@ subscribers = set()
 notified_lessons = set()
 admin_context = {}
 
+# ✅ Логи действий админов
+admin_actions_active = []
+admin_actions_archive = []
+
 
 # ======================
 # 🗄️ ПЕРСИСТЕНТНОСТЬ
@@ -232,6 +236,7 @@ def get_local_now():
         return datetime.now() + timedelta(hours=TIMEZONE_OFFSET_HOURS)
     return datetime.now()
 
+
 def get_local_date():
     return get_local_now().date()
 
@@ -248,55 +253,71 @@ def is_allowed_thread(message: Message) -> bool:
 
 
 # ======================
+# ✅ ЛОГИ АДМИНОВ
+# ======================
+def get_admin_name(user):
+    if user.username:
+        return f"@{user.username}"
+    return user.full_name or str(user.id)
+
+
+def log_admin_action(user, target_date: date, description: str):
+    entry = {
+        "admin_id": user.id,
+        "admin_name": get_admin_name(user),
+        "date_str": target_date.isoformat(),
+        "timestamp": get_local_now().strftime("%d.%m.%Y %H:%M"),
+        "description": description,
+    }
+    admin_actions_active.append(entry)
+
+
+def archive_actions_for_date(date_str: str):
+    global admin_actions_active, admin_actions_archive
+    remaining = []
+    for a in admin_actions_active:
+        if a["date_str"] == date_str:
+            admin_actions_archive.append(a)
+        else:
+            remaining.append(a)
+    admin_actions_active = remaining
+
+
+# ======================
 # ✅ FIX #4: 100% ПРОВЕРКА АДМИНКИ + ТИП ЧАТА
 # ======================
 def get_safe_keyboard(user_id: int, chat_type: str) -> ReplyKeyboardMarkup:
     """
-    ГЕНЕРИРУЕТ КЛАВИАТУРУ ЗАНОВО КАЖДЫЙ РАЗ.
-    Кнопка админа появляется ТОЛЬКО если:
-    1. user_id в ADMIN_ID
-    2. chat_type == 'private' (личный чат)
+    Клавиатура для юзера.
+    Админ-кнопка есть только у админов и только в личке.
     """
     is_admin = user_id in ADMIN_ID
     is_private = chat_type == ChatType.PRIVATE
 
-    # ✅ Кнопка управления видна только админу в ЛИЧНОМ чате
-    show_admin_button = is_admin and is_private
+    buttons = [
+        [KeyboardButton(text="📌 Какая сейчас пара?")],
+        [KeyboardButton(text="📖 Расписание сегодня"), KeyboardButton(text="📅 Расписание завтра")],
+        [KeyboardButton(text="🔔 Подписаться на уведомления"),
+         KeyboardButton(text="🔕 Отписаться от уведомлений")],
+        [KeyboardButton(text="📚 Предметы")],
+    ]
 
-    if show_admin_button:
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="⚙️ Управление расписанием")],
-                [KeyboardButton(text="📌 Какая сейчас пара?")],
-                [KeyboardButton(text="📖 Расписание сегодня"), KeyboardButton(text="📅 Расписание завтра")],
-                [KeyboardButton(text="🔔 Подписаться на уведомления"),
-                 KeyboardButton(text="🔕 Отписаться от уведомлений")],
-                [KeyboardButton(text="📚 Предметы")],
-            ],
-            resize_keyboard=True
-        )
-    else:
-        # Обычная клавиатура для всех в группах и для обычных пользователей
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="📌 Какая сейчас пара?")],
-                [KeyboardButton(text="📖 Расписание сегодня"), KeyboardButton(text="📅 Расписание завтра")],
-                [KeyboardButton(text="🔔 Подписаться на уведомления"),
-                 KeyboardButton(text="🔕 Отписаться от уведомлений")],
-                [KeyboardButton(text="📚 Предметы")],
-            ],
-            resize_keyboard=True
-        )
+    # ✅ Новая админ-кнопка, старая "⚙️ Управление расписанием" полностью убрана
+    if is_admin and is_private:
+        buttons.insert(0, [KeyboardButton(text="🛠 Админ расписание")])
+
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
 # ======================
 # 🔘 ОСТАЛЬНЫЕ КЛАВИАТУРЫ
 # ======================
 def get_week_select_keyboard():
+    # Используется только из админ-панели по inline-кнопкам
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Чётная", callback_data="week_even"),
-         InlineKeyboardButton(text="Нечётная", callback_data="week_odd")],
-        [InlineKeyboardButton(text="🔙 В меню", callback_data="nav_main")]
+        [InlineKeyboardButton(text="Чётная неделя", callback_data="week_even"),
+         InlineKeyboardButton(text="Нечётная неделя", callback_data="week_odd")],
+        [InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")]
     ])
 
 
@@ -314,6 +335,7 @@ def get_days_keyboard():
 
 
 def get_lessons_keyboard(lessons, week_type, day_name):
+    # week_type: "even"/"odd" или реальный тип недели, day_name: русское имя дня
     keyboard = []
     for idx, lesson in enumerate(lessons):
         short_name = (lesson["name"][:25] + "..") if len(lesson["name"]) > 25 else lesson["name"]
@@ -333,7 +355,10 @@ def get_lesson_edit_keyboard(week_type, day_name, idx):
         [InlineKeyboardButton(text="👨‍🏫 Изменить преподавателя",
                               callback_data=f"edit_teacher_{week_type}_{day_name}_{idx}")],
         [InlineKeyboardButton(text="⏰ Изменить время", callback_data=f"edit_time_{week_type}_{day_name}_{idx}")],
-        [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"del_{week_type}_{day_name}_{idx}")],
+        [InlineKeyboardButton(text="🆕 Изменить пару полностью",
+                              callback_data=f"edit_full_{week_type}_{day_name}_{idx}")],
+        [InlineKeyboardButton(text="🗑️ Удалить пару (на этот день)",
+                              callback_data=f"del_{week_type}_{day_name}_{idx}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data=f"nav_lessons_{week_type}_{day_name}")]
     ])
 
@@ -358,7 +383,7 @@ def get_subjects_keyboard(subjects):
 # ======================
 def get_week_type(target_date=None):
     if target_date is None:
-        target_date = get_local_date()  # ✅ Было: date.today()
+        target_date = get_local_date()
     delta = (target_date - EVEN_WEEK_START).days
     weeks = delta // 7
     return "even" if weeks % 2 == 0 else "odd"
@@ -366,7 +391,7 @@ def get_week_type(target_date=None):
 
 def get_schedule(target_date=None):
     if target_date is None:
-        target_date = get_local_date()  # ✅ Было: date.today()
+        target_date = get_local_date()
     week_type = get_week_type(target_date)
     day_name = target_date.strftime("%A")
     base = schedule.get(week_type, {}).get(day_name, [])
@@ -385,10 +410,12 @@ def get_all_subjects():
                     for part in parts:
                         if "нет пары" not in part:
                             clean = clean_subject_name(part)
-                            if clean: subjects.add(clean)
+                            if clean:
+                                subjects.add(clean)
                 elif "нет пары" not in name:
                     clean = clean_subject_name(name)
-                    if clean: subjects.add(clean)
+                    if clean:
+                        subjects.add(clean)
     return sorted(subjects)
 
 
@@ -408,10 +435,17 @@ def find_subject_occurrences(subject_name):
                         lesson_type = "Практика"
                     elif name.startswith("ЛБ"):
                         lesson_type = "Лабораторная"
-                    result.append({"day": day_ru, "start": lesson["start"].strftime("%H:%M"),
-                                   "end": lesson["end"].strftime("%H:%M"),
-                                   "week": "чёт" if week_type == "even" else "нечёт", "room": lesson["room"],
-                                   "teacher": lesson["teacher"], "type": lesson_type})
+                    result.append(
+                        {
+                            "day": day_ru,
+                            "start": lesson["start"].strftime("%H:%M"),
+                            "end": lesson["end"].strftime("%H:%M"),
+                            "week": "чёт" if week_type == "even" else "нечёт",
+                            "room": lesson["room"],
+                            "teacher": lesson["teacher"],
+                            "type": lesson_type
+                        }
+                    )
     return result
 
 
@@ -421,33 +455,25 @@ def find_subject_occurrences(subject_name):
 def get_current_class():
     now = get_local_now()
     today = get_local_date()
-    
-    # ✅ Убрал проверку hour < 3 - теперь работает круглосуточно
+
     lessons = get_schedule(today)
-    
+
     if not lessons:
         return None, None
-    
-    # Сортируем уроки по времени начала
+
     lessons_sorted = sorted(lessons, key=lambda x: x["start"])
-    
-    # Проверяем каждый урок
+
     for i, lesson in enumerate(lessons_sorted):
         start_dt = datetime.combine(today, lesson["start"])
         end_dt = datetime.combine(today, lesson["end"])
-        
-        # ✅ Если сейчас идёт урок
+
         if start_dt <= now <= end_dt:
             return "ongoing", lesson
-        
-        # ✅ Если урок ещё не начался
+
         if now < start_dt:
-            # Проверяем, есть ли окно перед этим уроком
             if i > 0:
                 prev_lesson = lessons_sorted[i - 1]
                 prev_end = datetime.combine(today, prev_lesson["end"])
-                
-                # Если между уроками есть промежуток > 10 минут
                 gap_minutes = int((start_dt - prev_end).total_seconds() // 60)
                 if gap_minutes > 30 and now > prev_end:
                     return "break", {
@@ -456,18 +482,17 @@ def get_current_class():
                         "teacher": "—",
                         "start": prev_lesson["end"],
                         "end": lesson["start"],
-                        "is_break": True  # ✅ Метка что это окно
+                        "is_break": True
                     }
-            
+
             minutes = int((start_dt - now).total_seconds() // 60)
             return minutes, lesson
-    
-    # ✅ После последнего урока
+
     last_lesson = lessons_sorted[-1]
     last_end = datetime.combine(today, last_lesson["end"])
     if now > last_end:
         return None, None
-    
+
     return None, None
 
 
@@ -489,7 +514,6 @@ class AdminEdit(StatesGroup):
 async def start_handler(message: Message):
     if not is_allowed_thread(message):
         return
-    # ✅ Генерируем клавиатуру с учётом типа чата и ID
     keyboard = get_safe_keyboard(message.from_user.id, message.chat.type)
     await message.answer("Готов батрачить ⚙️", reply_markup=keyboard)
 
@@ -499,97 +523,108 @@ async def start_handler(message: Message):
 # ======================
 @dp.message(F.text == "📌 Какая сейчас пара?")
 async def current_class(message: Message):
-    if not is_allowed_thread(message): 
+    if not is_allowed_thread(message):
         await message.answer("❌ Эта команда доступна только в разрешённой ветке")
         return
-    
+
     status, lesson = get_current_class()
-    
+
     if status == "ongoing":
         text = f"🟢 Сейчас идёт:\n<b>{lesson['name']}</b>\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
-    elif status == "break":  # ✅ Новая ветка для окон
-        text = f"⏸️ <b>Сейчас окно между парами</b>\n⏰ Следующая пара через {lesson.get('duration', 'скоро')}\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
+    elif status == "break":
+        text = (
+            f"⏸️ <b>Сейчас окно между парами</b>\n"
+            f"🚪 {lesson['room']}\n"
+            f"👨‍🏫 {lesson['teacher']}"
+        )
     elif isinstance(status, int):
-        text = f"⏳ До {lesson['name']} осталось {status} мин\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
+        text = (
+            f"⏳ До {lesson['name']} осталось {status} мин\n"
+            f"🚪 {lesson['room']}\n"
+            f"👨‍🏫 {lesson['teacher']}"
+        )
     else:
         text = random.choice(NO_CLASSES_PHRASES)
-    
+
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 @dp.message(F.text == "📖 Расписание сегодня")
 async def today_schedule(message: Message):
-    if not is_allowed_thread(message): 
+    if not is_allowed_thread(message):
         return
-    
+
     lessons = get_schedule(get_local_date())
-    
+
     if not lessons:
         await message.answer(random.choice(NO_CLASSES_PHRASES))
         return
-    
-    # ✅ Сортируем и добавляем окна между парами
+
     lessons_sorted = sorted(lessons, key=lambda x: x["start"])
-    
+
     text = "<b>📖 Сегодня:</b>\n"
-    
+    today = get_local_date()
+
     for i, lesson in enumerate(lessons_sorted):
         text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
         text += f"📚 {lesson['name']}\n"
         text += f"🚪 {lesson['room']} | 👨‍🏫 {lesson['teacher']}\n\n"
-        
-        # ✅ Добавляем окно между парами (если есть промежуток > 10 мин)
+
         if i < len(lessons_sorted) - 1:
             next_lesson = lessons_sorted[i + 1]
-            gap_seconds = (datetime.combine(get_local_date(), next_lesson["start"]) - 
-                          datetime.combine(get_local_date(), lesson["end"])).total_seconds()
+            gap_seconds = (
+                datetime.combine(today, next_lesson["start"]) -
+                datetime.combine(today, lesson["end"])
+            ).total_seconds()
             gap_minutes = int(gap_seconds // 60)
-            
-            if gap_minutes > 30:  # ✅ Показываем окна больше 10 минут
+
+            if gap_minutes > 30:
                 text += f"⏸️ <b>Окно: {gap_minutes} мин</b>\n\n"
-    
+
     await message.answer(text, parse_mode=ParseMode.HTML)
+
 
 @dp.message(F.text == "📅 Расписание завтра")
 async def tomorrow_schedule(message: Message):
-    if not is_allowed_thread(message): 
+    if not is_allowed_thread(message):
         return
-    
+
     tomorrow = get_local_date() + timedelta(days=1)
     lessons = get_schedule(tomorrow)
-    
+
     if not lessons:
         await message.answer(random.choice(NO_CLASSES_PHRASES))
         return
-    
-    # ✅ Сортируем уроки по времени начала
+
     lessons_sorted = sorted(lessons, key=lambda x: x["start"])
-    
+
     text = "<b>📅 Завтра:</b>\n\n"
-    
+
     for i, lesson in enumerate(lessons_sorted):
         text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
         text += f"📚 {lesson['name']}\n"
         text += f"🚪 {lesson['room']} | 👨‍🏫 {lesson['teacher']}\n\n"
-        
-        # ✅ Добавляем окно между парами (если есть промежуток > 10 мин)
+
         if i < len(lessons_sorted) - 1:
             next_lesson = lessons_sorted[i + 1]
-            gap_seconds = (datetime.combine(tomorrow, next_lesson["start"]) - 
-                          datetime.combine(tomorrow, lesson["end"])).total_seconds()
+            gap_seconds = (
+                datetime.combine(tomorrow, next_lesson["start"]) -
+                datetime.combine(tomorrow, lesson["end"])
+            ).total_seconds()
             gap_minutes = int(gap_seconds // 60)
-            
-            if gap_minutes > 30:  # ✅ Показываем окна больше 10 минут
+
+            if gap_minutes > 30:
                 text += f"⏸️ <b>Окно: {gap_minutes} мин</b>\n\n"
-    
+
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 @dp.message(F.text == "🔔 Подписаться на уведомления")
 async def subscribe(message: Message):
-    if not is_allowed_thread(message): return
+    if not is_allowed_thread(message):
+        return
     if message.from_user.id not in subscribers:
-        subscribers.add(message.from_user.id);
+        subscribers.add(message.from_user.id)
         save_subscribers(subscribers)
         await message.answer("✅ Вы подписаны на уведомления за 5 минут до пары!")
     else:
@@ -598,9 +633,10 @@ async def subscribe(message: Message):
 
 @dp.message(F.text == "🔕 Отписаться от уведомлений")
 async def unsubscribe(message: Message):
-    if not is_allowed_thread(message): return
+    if not is_allowed_thread(message):
+        return
     if message.from_user.id in subscribers:
-        subscribers.remove(message.from_user.id);
+        subscribers.remove(message.from_user.id)
         save_subscribers(subscribers)
         await message.answer("🔕 Вы отписаны от уведомлений")
     else:
@@ -609,16 +645,17 @@ async def unsubscribe(message: Message):
 
 @dp.message(F.text == "📚 Предметы")
 async def show_subjects(message: Message):
-    if not is_allowed_thread(message): return
+    if not is_allowed_thread(message):
+        return
     subjects = get_all_subjects()
     if not subjects:
-        await message.answer("❌ Предметы не найдены");
+        await message.answer("❌ Предметы не найдены")
         return
     await message.answer("📚 Выберите предмет:", reply_markup=get_subjects_keyboard(subjects))
 
 
 # ======================
-# ✅ FIX #4: CALLBACK С ПРОВЕРКОЙ ПРАВ
+# ПРЕДМЕТЫ
 # ======================
 @dp.callback_query(F.data.startswith("subj_"))
 async def subject_info(callback: CallbackQuery):
@@ -628,27 +665,34 @@ async def subject_info(callback: CallbackQuery):
     if not subject:
         for key, val in SUBJECT_MAP.items():
             if key.endswith(subj_id) or subj_id in key:
-                subject = val;
+                subject = val
                 break
     if not subject:
-        await callback.answer("❌ Предмет не найден", show_alert=True);
+        await callback.answer("❌ Предмет не найден", show_alert=True)
         return
     occurrences = find_subject_occurrences(subject)
     if not occurrences:
-        await callback.answer("❌ Пар не найдено", show_alert=True);
+        await callback.answer("❌ Пар не найдено", show_alert=True)
         return
     text = f"<b>{subject}</b>\n"
     for occ in occurrences:
         type_str = f"({occ['type']})" if occ['type'] else ""
-        text += f"{occ['day']} {occ['start']}–{occ['end']} {type_str} ({occ['week']} нед.)\n🚪 {occ['room']} | 👨‍🏫 {occ['teacher']}\n"
-    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔙 В меню", callback_data="nav_main")]]), parse_mode=ParseMode.HTML)
+        text += (
+            f"{occ['day']} {occ['start']}–{occ['end']} {type_str} ({occ['week']} нед.)\n"
+            f"🚪 {occ['room']} | 👨‍🏫 {occ['teacher']}\n"
+        )
+    await callback.message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 В меню", callback_data="nav_main")]]
+        ),
+        parse_mode=ParseMode.HTML
+    )
     await callback.answer()
 
 
 @dp.callback_query(F.data == "nav_main")
 async def back_to_main(callback: CallbackQuery):
-    # ✅ 100% ПРОВЕРКА: Генерируем клавиатуру заново на основе ID и ТИПА ЧАТА
     keyboard = get_safe_keyboard(callback.from_user.id, callback.message.chat.type)
     await callback.message.delete()
     await callback.message.answer("Главное меню:", reply_markup=keyboard)
@@ -675,30 +719,215 @@ async def admin_back_lessons(callback: CallbackQuery):
         day_name = "_".join(parts[1:]) if len(parts) > 2 else parts[1]
         day_en = DAY_RU_TO_EN.get(day_name, day_name)
         lessons = schedule.get(week_type, {}).get(day_en, [])
-        await callback.message.edit_text(f"📚 {day_name} ({week_type}): выберите пару",
-                                         reply_markup=get_lessons_keyboard(lessons, week_type, day_name))
+        await callback.message.edit_text(
+            f"📚 {day_name} ({week_type}): выберите пару",
+            reply_markup=get_lessons_keyboard(lessons, week_type, day_name)
+        )
         await callback.answer()
 
 
 # ======================
-# ⚙️ АДМИН: УПРАВЛЕНИЕ
+# 🛠 НОВАЯ АДМИН-ПАНЕЛЬ
 # ======================
-@dp.message(F.text == "⚙️ Управление расписанием")
+def get_admin_panel_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📅 Сегодня", callback_data="adm_today"),
+            InlineKeyboardButton(text="📆 Завтра", callback_data="adm_tomorrow"),
+        ],
+        [
+            InlineKeyboardButton(text="🗓️ Чётная неделя", callback_data="week_even"),
+            InlineKeyboardButton(text="🗓️ Нечётная неделя", callback_data="week_odd"),
+        ],
+        [
+            InlineKeyboardButton(text="📜 История действий", callback_data="adm_logs"),
+        ],
+    ])
+
+
+def format_week_info(target_date: date) -> str:
+    week_type = get_week_type(target_date)
+    day_en = target_date.strftime("%A")
+    day_ru = DAY_EN_TO_RU.get(day_en, day_en)
+    week_str = "чётная" if week_type == "even" else "нечётная"
+    return f"{day_ru}, {target_date.strftime('%d.%m.%Y')} — {week_str} неделя"
+
+
+@dp.message(F.text == "🛠 Админ расписание")
 async def admin_schedule_start(message: Message):
-    if not is_allowed_thread(message): return
-    # ✅ Тройная проверка: ветка + админ + личный чат
+    if not is_allowed_thread(message):
+        return
     if message.from_user.id not in ADMIN_ID:
         await message.answer("❌ Доступ запрещён. Вы не администратор.")
         return
     if message.chat.type != ChatType.PRIVATE:
-        await message.answer("❌ Управление расписанием доступно только в личных сообщениях с ботом.")
+        await message.answer("❌ Админ-панель доступна только в личных сообщениях с ботом.")
         return
-    await message.answer("🗓️ Какую неделю изменить?", reply_markup=get_week_select_keyboard())
+
+    today = get_local_date()
+    info_today = format_week_info(today)
+
+    text = (
+        "<b>🛠 Админ-панель расписания</b>\n\n"
+        f"Сегодня: {info_today}\n\n"
+        "Выберите режим работы:"
+    )
+
+    await message.answer(text, reply_markup=get_admin_panel_keyboard(), parse_mode=ParseMode.HTML)
 
 
+@dp.callback_query(F.data == "adm_back_main")
+async def adm_back_main(callback: CallbackQuery):
+    today = get_local_date()
+    info_today = format_week_info(today)
+    text = (
+        "<b>🛠 Админ-панель расписания</b>\n\n"
+        f"Сегодня: {info_today}\n\n"
+        "Выберите режим работы:"
+    )
+    await callback.message.edit_text(text, reply_markup=get_admin_panel_keyboard(), parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+async def show_admin_day(callback: CallbackQuery, target_date: date):
+    if callback.from_user.id not in ADMIN_ID:
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
+        return
+
+    lessons = get_schedule(target_date)
+    date_str = target_date.isoformat()
+    week_type = get_week_type(target_date)
+    day_en = target_date.strftime("%A")
+    day_ru = DAY_EN_TO_RU.get(day_en, day_en)
+
+    admin_context[callback.from_user.id] = {
+        "week_type": week_type,
+        "day_name": day_ru,
+        "day_en": day_en,
+        "target_date": date_str
+    }
+
+    if not lessons:
+        text = (
+            f"<b>{format_week_info(target_date)}</b>\n\n"
+            "❌ В этот день нет пар."
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")]]
+        )
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        await callback.answer()
+        return
+
+    lessons_sorted = sorted(lessons, key=lambda x: x["start"])
+    kb = []
+    for idx, lesson in enumerate(lessons_sorted):
+        short_name = (lesson["name"][:25] + "..") if len(lesson["name"]) > 25 else lesson["name"]
+        cb = f"adm_lesson_{date_str}_{idx}"
+        kb.append([InlineKeyboardButton(text=f"{short_name} ({lesson['start'].strftime('%H:%M')})", callback_data=cb)])
+
+    # Кнопка сброса всех изменений дня, если для этой даты есть временные изменения
+    if date_str in temporary_changes:
+        kb.append([InlineKeyboardButton(text="🔄 Сбросить все изменения дня", callback_data=f"adm_reset_{date_str}")])
+
+    kb.append([InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")])
+
+    text = f"<b>{format_week_info(target_date)}</b>\n\nВыберите пару для редактирования:"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "adm_today")
+async def adm_today(callback: CallbackQuery):
+    await show_admin_day(callback, get_local_date())
+
+
+@dp.callback_query(F.data == "adm_tomorrow")
+async def adm_tomorrow(callback: CallbackQuery):
+    await show_admin_day(callback, get_local_date() + timedelta(days=1))
+
+
+@dp.callback_query(F.data.startswith("adm_lesson_"))
+async def adm_select_lesson_by_date(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_ID:
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
+        return
+
+    _, _, date_str, idx_str = callback.data.split("_", 3)
+    idx = int(idx_str)
+    target_date = date.fromisoformat(date_str)
+
+    lessons = get_schedule(target_date)
+    if idx >= len(lessons):
+        await callback.answer("❌ Ошибка индекса", show_alert=True)
+        return
+
+    week_type = get_week_type(target_date)
+    day_en = target_date.strftime("%A")
+    day_ru = DAY_EN_TO_RU.get(day_en, day_en)
+
+    lesson = lessons[idx]
+
+    # Обновляем контекст
+    prev_ctx = admin_context.get(callback.from_user.id, {})
+    ctx = {
+        "week_type": week_type,
+        "day_name": day_ru,
+        "day_en": day_en,
+        "idx": idx,
+        "lesson": lesson.copy(),
+        "target_date": date_str,
+        "full_edit": False
+    }
+    admin_context[callback.from_user.id] = ctx
+
+    text = (
+        f"<b>{lesson['name']}</b>\n"
+        f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
+        f"🚪 {lesson['room']}\n"
+        f"👨‍🏫 {lesson['teacher']}\n\n"
+        f"{format_week_info(target_date)}"
+    )
+    await callback.message.edit_text(text, reply_markup=get_lesson_edit_keyboard(week_type, day_ru, idx),
+                                     parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_reset_"))
+async def adm_reset_day(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_ID:
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
+        return
+
+    date_str = callback.data.replace("adm_reset_", "")
+    try:
+        target_date = date.fromisoformat(date_str)
+    except:
+        await callback.answer("❌ Неверная дата", show_alert=True)
+        return
+
+    if date_str in temporary_changes:
+        temporary_changes.pop(date_str, None)
+        archive_actions_for_date(date_str)
+        log_admin_action(callback.from_user, target_date, "сбросил все изменения этого дня")
+        await callback.message.edit_text(
+            f"🔄 Все временные изменения на {target_date.strftime('%d.%m.%Y')} сброшены.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")]]
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await callback.answer("ℹ️ Для этого дня нет временных изменений", show_alert=True)
+
+    await callback.answer()
+
+
+# ======================
+# ⚙️ СТАРЫЙ БЛОК АДМИН-НЕДЕЛИ (ИСПОЛЬЗУЕТСЯ ДЛЯ ЧЁТ/НЕЧЁТ)
+# ======================
 @dp.callback_query(F.data.startswith("week_"))
 async def admin_select_week(callback: CallbackQuery):
-    # ✅ Проверка прав для кнопок админки
     if callback.from_user.id not in ADMIN_ID:
         await callback.answer("❌ Доступ запрещён", show_alert=True)
         return
@@ -719,10 +948,31 @@ async def admin_select_day(callback: CallbackQuery):
     week_type = ctx.get("week_type", "even")
     lessons = schedule.get(week_type, {}).get(day_en, [])
     if not lessons:
-        await callback.answer("❌ Нет пар в этот день", show_alert=True);
+        await callback.answer("❌ Нет пар в этот день", show_alert=True)
         return
-    await callback.message.edit_text(f"📚 {day_ru} ({week_type}): выберите пару для редактирования",
-                                     reply_markup=get_lessons_keyboard(lessons, week_type, day_ru))
+
+    # Находим ближайшую дату с такой неделей и днём
+    today = get_local_date()
+    target_date = None
+    for i in range(7):
+        check_date = today + timedelta(days=i)
+        if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
+            target_date = check_date
+            break
+    if target_date is None:
+        target_date = today
+
+    admin_context[callback.from_user.id] = {
+        "week_type": week_type,
+        "day_name": day_ru,
+        "day_en": day_en,
+        "target_date": target_date.isoformat()
+    }
+
+    await callback.message.edit_text(
+        f"📚 {day_ru} ({week_type}): выберите пару для редактирования",
+        reply_markup=get_lessons_keyboard(lessons, week_type, day_ru)
+    )
     await callback.answer()
 
 
@@ -733,7 +983,7 @@ async def admin_select_lesson(callback: CallbackQuery):
         return
     parts = callback.data.split("_")
     if len(parts) < 4:
-        await callback.answer("❌ Ошибка данных", show_alert=True);
+        await callback.answer("❌ Ошибка данных", show_alert=True)
         return
     week_type = parts[1]
     day_name = parts[2]
@@ -741,13 +991,44 @@ async def admin_select_lesson(callback: CallbackQuery):
     day_en = DAY_RU_TO_EN.get(day_name, day_name)
     lessons = schedule.get(week_type, {}).get(day_en, [])
     if idx >= len(lessons):
-        await callback.answer("❌ Ошибка индекса", show_alert=True);
+        await callback.answer("❌ Ошибка индекса", show_alert=True)
         return
     lesson = lessons[idx]
-    text = f"<b>{lesson['name']}</b>\n⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
-    admin_context[callback.from_user.id] = {"week_type": week_type, "day_name": day_name, "day_en": day_en, "idx": idx,
-                                            "lesson": lesson.copy()}
-    await callback.message.edit_text(text, reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx))
+
+    prev_ctx = admin_context.get(callback.from_user.id, {})
+    target_date_str = prev_ctx.get("target_date")
+
+    if not target_date_str:
+        # На всякий случай вычисляем дату, если не была сохранена
+        today = get_local_date()
+        target_date = None
+        for i in range(7):
+            check_date = today + timedelta(days=i)
+            if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
+                target_date = check_date
+                break
+        if target_date is None:
+            target_date = today
+        target_date_str = target_date.isoformat()
+
+    admin_context[callback.from_user.id] = {
+        "week_type": week_type,
+        "day_name": day_name,
+        "day_en": day_en,
+        "idx": idx,
+        "lesson": lesson.copy(),
+        "target_date": target_date_str,
+        "full_edit": False
+    }
+
+    text = (
+        f"<b>{lesson['name']}</b>\n"
+        f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
+        f"🚪 {lesson['room']}\n"
+        f"👨‍🏫 {lesson['teacher']}"
+    )
+    await callback.message.edit_text(text, reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx),
+                                     parse_mode=ParseMode.HTML)
     await callback.answer()
 
 
@@ -756,7 +1037,8 @@ async def admin_select_lesson(callback: CallbackQuery):
 # ======================
 @dp.callback_query(F.data.startswith("edit_name_"))
 async def edit_name_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_ID:
+        return
     ctx = admin_context.get(callback.from_user.id, {})
     lesson = ctx.get("lesson", {})
     await callback.message.answer(
@@ -768,7 +1050,8 @@ async def edit_name_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("edit_room_"))
 async def edit_room_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_ID:
+        return
     ctx = admin_context.get(callback.from_user.id, {})
     lesson = ctx.get("lesson", {})
     await callback.message.answer(
@@ -780,7 +1063,8 @@ async def edit_room_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("edit_teacher_"))
 async def edit_teacher_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_ID:
+        return
     ctx = admin_context.get(callback.from_user.id, {})
     lesson = ctx.get("lesson", {})
     await callback.message.answer(
@@ -792,13 +1076,36 @@ async def edit_teacher_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("edit_time_"))
 async def edit_time_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_ID:
+        return
     ctx = admin_context.get(callback.from_user.id, {})
     lesson = ctx.get("lesson", {})
     await callback.message.answer(
-        f"⏰ Введите новое время в формате ЧЧ:ММ-ЧЧ:ММ\nТекущее: <b>{lesson.get('start', '').strftime('%H:%M')}-{lesson.get('end', '').strftime('%H:%M')}</b>\nПример: 09:00-10:30\nОтправьте /cancel для отмены",
+        f"⏰ Введите новое время в формате ЧЧ:ММ-ЧЧ:ММ\n"
+        f"Текущее: <b>{lesson.get('start', '').strftime('%H:%M')}-{lesson.get('end', '').strftime('%H:%M')}</b>\n"
+        f"Пример: 09:00-10:30\nОтправьте /cancel для отмены",
         parse_mode=ParseMode.HTML)
     await state.set_state(AdminEdit.waiting_start_time)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("edit_full_"))
+async def edit_full_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_ID:
+        return
+    ctx = admin_context.get(callback.from_user.id, {})
+    lesson = ctx.get("lesson", {})
+    ctx["full_edit"] = True
+    admin_context[callback.from_user.id] = ctx
+
+    await callback.message.answer(
+        f"🆕 Полное редактирование пары.\n"
+        f"Шаг 1/4 — введите новое название пары.\n"
+        f"Текущее: <b>{lesson.get('name', 'N/A')}</b>\n"
+        f"Отправьте /cancel для отмены",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(AdminEdit.waiting_name)
     await callback.answer()
 
 
@@ -807,180 +1114,269 @@ async def edit_time_start(callback: CallbackQuery, state: FSMContext):
 # ======================
 @dp.message(AdminEdit.waiting_name)
 async def save_name(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_ID: return
+    if message.from_user.id not in ADMIN_ID:
+        return
     if message.text == "/cancel":
-        await state.clear();
-        await message.answer("❌ Отменено");
+        ctx = admin_context.get(message.from_user.id, {})
+        ctx["full_edit"] = False
+        admin_context[message.from_user.id] = ctx
+        await state.clear()
+        await message.answer("❌ Отменено")
         return
     ctx = admin_context.get(message.from_user.id, {})
-    week_type = ctx.get("week_type");
-    day_name = ctx.get("day_name");
-    day_en = ctx.get("day_en");
+    week_type = ctx.get("week_type")
+    day_name = ctx.get("day_name")
+    day_en = ctx.get("day_en")
     idx = ctx.get("idx")
-    if not all([week_type, day_en, idx is not None]):
-        await message.answer("❌ Ошибка контекста");
-        await state.clear();
+    target_date_str = ctx.get("target_date")
+    full_edit = ctx.get("full_edit", False)
+
+    if not all([week_type, day_en, idx is not None, target_date_str]):
+        await message.answer("❌ Ошибка контекста")
+        await state.clear()
         return
-    today = get_local_date();
-    target_date = None
-    for i in range(7):
-        check_date = today + timedelta(days=i)
-        if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
-            target_date = check_date;
-            break
-    if not target_date:
-        await message.answer("❌ Не найдена дата");
-        await state.clear();
-        return
+
+    target_date = date.fromisoformat(target_date_str)
+
     if str(target_date) not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
         temporary_changes[str(target_date)] = [l.copy() for l in base]
+
     if idx < len(temporary_changes[str(target_date)]):
+        old_name = temporary_changes[str(target_date)][idx]["name"]
         temporary_changes[str(target_date)][idx]["name"] = message.text
-        await message.answer(f"✅ Название обновлено: <b>{message.text}</b>", parse_mode=ParseMode.HTML)
         admin_context[message.from_user.id]["lesson"]["name"] = message.text
+        log_admin_action(
+            message.from_user,
+            target_date,
+            f"изменил название пары «{old_name}» на «{message.text}»"
+        )
+        await message.answer(f"✅ Название обновлено: <b>{message.text}</b>", parse_mode=ParseMode.HTML)
     else:
         await message.answer("❌ Ошибка индекса")
-    await state.clear()
-    await message.answer("Выберите действие:", reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx))
+        await state.clear()
+        return
+
+    if full_edit:
+        lesson = admin_context[message.from_user.id]["lesson"]
+        await message.answer(
+            f"Шаг 2/4 — введите новый кабинет.\n"
+            f"Текущий: <b>{lesson.get('room', 'N/A')}</b>\n"
+            f"Отправьте /cancel для отмены",
+            parse_mode=ParseMode.HTML
+        )
+        await state.set_state(AdminEdit.waiting_room)
+    else:
+        await state.clear()
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx)
+        )
 
 
 @dp.message(AdminEdit.waiting_room)
 async def save_room(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_ID: return
+    if message.from_user.id not in ADMIN_ID:
+        return
     if message.text == "/cancel":
-        await state.clear();
-        await message.answer("❌ Отменено");
+        ctx = admin_context.get(message.from_user.id, {})
+        ctx["full_edit"] = False
+        admin_context[message.from_user.id] = ctx
+        await state.clear()
+        await message.answer("❌ Отменено")
         return
     ctx = admin_context.get(message.from_user.id, {})
-    week_type = ctx.get("week_type");
-    day_name = ctx.get("day_name");
-    day_en = ctx.get("day_en");
+    week_type = ctx.get("week_type")
+    day_name = ctx.get("day_name")
+    day_en = ctx.get("day_en")
     idx = ctx.get("idx")
-    if not all([week_type, day_en, idx is not None]):
-        await message.answer("❌ Ошибка контекста");
-        await state.clear();
+    target_date_str = ctx.get("target_date")
+    full_edit = ctx.get("full_edit", False)
+
+    if not all([week_type, day_en, idx is not None, target_date_str]):
+        await message.answer("❌ Ошибка контекста")
+        await state.clear()
         return
-    today = get_local_date();
-    target_date = None
-    for i in range(7):
-        check_date = today + timedelta(days=i)
-        if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
-            target_date = check_date;
-            break
-    if not target_date:
-        await message.answer("❌ Не найдена дата");
-        await state.clear();
-        return
+
+    target_date = date.fromisoformat(target_date_str)
+
     if str(target_date) not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
         temporary_changes[str(target_date)] = [l.copy() for l in base]
+
     if idx < len(temporary_changes[str(target_date)]):
+        old_room = temporary_changes[str(target_date)][idx]["room"]
         temporary_changes[str(target_date)][idx]["room"] = message.text
-        await message.answer(f"✅ Кабинет обновлён: <b>{message.text}</b>", parse_mode=ParseMode.HTML)
         admin_context[message.from_user.id]["lesson"]["room"] = message.text
+        log_admin_action(
+            message.from_user,
+            target_date,
+            f"изменил кабинет пары «{admin_context[message.from_user.id]['lesson']['name']}» "
+            f"с «{old_room}» на «{message.text}»"
+        )
+        await message.answer(f"✅ Кабинет обновлён: <b>{message.text}</b>", parse_mode=ParseMode.HTML)
     else:
         await message.answer("❌ Ошибка индекса")
-    await state.clear()
-    await message.answer("Выберите действие:", reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx))
+        await state.clear()
+        return
+
+    if full_edit:
+        lesson = admin_context[message.from_user.id]["lesson"]
+        await message.answer(
+            f"Шаг 3/4 — введите нового преподавателя.\n"
+            f"Текущий: <b>{lesson.get('teacher', 'N/A')}</b>\n"
+            f"Отправьте /cancel для отмены",
+            parse_mode=ParseMode.HTML
+        )
+        await state.set_state(AdminEdit.waiting_teacher)
+    else:
+        await state.clear()
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx)
+        )
 
 
 @dp.message(AdminEdit.waiting_teacher)
 async def save_teacher(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_ID: return
+    if message.from_user.id not in ADMIN_ID:
+        return
     if message.text == "/cancel":
-        await state.clear();
-        await message.answer("❌ Отменено");
+        ctx = admin_context.get(message.from_user.id, {})
+        ctx["full_edit"] = False
+        admin_context[message.from_user.id] = ctx
+        await state.clear()
+        await message.answer("❌ Отменено")
         return
     ctx = admin_context.get(message.from_user.id, {})
-    week_type = ctx.get("week_type");
-    day_name = ctx.get("day_name");
-    day_en = ctx.get("day_en");
+    week_type = ctx.get("week_type")
+    day_name = ctx.get("day_name")
+    day_en = ctx.get("day_en")
     idx = ctx.get("idx")
-    if not all([week_type, day_en, idx is not None]):
-        await message.answer("❌ Ошибка контекста");
-        await state.clear();
+    target_date_str = ctx.get("target_date")
+    full_edit = ctx.get("full_edit", False)
+
+    if not all([week_type, day_en, idx is not None, target_date_str]):
+        await message.answer("❌ Ошибка контекста")
+        await state.clear()
         return
-    today = get_local_date();
-    target_date = None
-    for i in range(7):
-        check_date = today + timedelta(days=i)
-        if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
-            target_date = check_date;
-            break
-    if not target_date:
-        await message.answer("❌ Не найдена дата");
-        await state.clear();
-        return
+
+    target_date = date.fromisoformat(target_date_str)
+
     if str(target_date) not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
         temporary_changes[str(target_date)] = [l.copy() for l in base]
+
     if idx < len(temporary_changes[str(target_date)]):
+        old_t = temporary_changes[str(target_date)][idx]["teacher"]
         temporary_changes[str(target_date)][idx]["teacher"] = message.text
-        await message.answer(f"✅ Преподаватель обновлён: <b>{message.text}</b>", parse_mode=ParseMode.HTML)
         admin_context[message.from_user.id]["lesson"]["teacher"] = message.text
+        log_admin_action(
+            message.from_user,
+            target_date,
+            f"изменил преподавателя пары «{admin_context[message.from_user.id]['lesson']['name']}» "
+            f"с «{old_t}» на «{message.text}»"
+        )
+        await message.answer(f"✅ Преподаватель обновлён: <b>{message.text}</b>", parse_mode=ParseMode.HTML)
     else:
         await message.answer("❌ Ошибка индекса")
-    await state.clear()
-    await message.answer("Выберите действие:", reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx))
+        await state.clear()
+        return
+
+    if full_edit:
+        lesson = admin_context[message.from_user.id]["lesson"]
+        await message.answer(
+            f"Шаг 4/4 — введите новое время в формате ЧЧ:ММ-ЧЧ:ММ.\n"
+            f"Текущее: <b>{lesson.get('start', '').strftime('%H:%M')}-{lesson.get('end', '').strftime('%H:%M')}</b>\n"
+            f"Пример: 09:00-10:30\nОтправьте /cancel для отмены",
+            parse_mode=ParseMode.HTML
+        )
+        await state.set_state(AdminEdit.waiting_start_time)
+    else:
+        await state.clear()
+        await message.answer(
+            "Выберите действие:",
+            reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx)
+        )
 
 
 @dp.message(AdminEdit.waiting_start_time)
 async def save_time(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_ID: return
+    if message.from_user.id not in ADMIN_ID:
+        return
     if message.text == "/cancel":
-        await state.clear();
-        await message.answer("❌ Отменено");
+        ctx = admin_context.get(message.from_user.id, {})
+        ctx["full_edit"] = False
+        admin_context[message.from_user.id] = ctx
+        await state.clear()
+        await message.answer("❌ Отменено")
         return
     match = re.match(r'(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})', message.text)
     if not match:
-        await message.answer("❌ Неверный формат. Пример: 09:00-10:30");
+        await message.answer("❌ Неверный формат. Пример: 09:00-10:30")
         return
     start_h, start_m, end_h, end_m = map(int, match.groups())
     try:
-        new_start = time(start_h, start_m);
+        new_start = time(start_h, start_m)
         new_end = time(end_h, end_m)
     except:
-        await message.answer("❌ Неверное время");
+        await message.answer("❌ Неверное время")
         return
     ctx = admin_context.get(message.from_user.id, {})
-    week_type = ctx.get("week_type");
-    day_name = ctx.get("day_name");
-    day_en = ctx.get("day_en");
+    week_type = ctx.get("week_type")
+    day_name = ctx.get("day_name")
+    day_en = ctx.get("day_en")
     idx = ctx.get("idx")
-    if not all([week_type, day_en, idx is not None]):
-        await message.answer("❌ Ошибка контекста");
-        await state.clear();
+    target_date_str = ctx.get("target_date")
+    full_edit = ctx.get("full_edit", False)
+
+    if not all([week_type, day_en, idx is not None, target_date_str]):
+        await message.answer("❌ Ошибка контекста")
+        await state.clear()
         return
-    today = get_local_date();
-    target_date = None
-    for i in range(7):
-        check_date = today + timedelta(days=i)
-        if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
-            target_date = check_date;
-            break
-    if not target_date:
-        await message.answer("❌ Не найдена дата");
-        await state.clear();
-        return
+
+    target_date = date.fromisoformat(target_date_str)
+
     if str(target_date) not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
         temporary_changes[str(target_date)] = [l.copy() for l in base]
+
     if idx < len(temporary_changes[str(target_date)]):
+        old_start = temporary_changes[str(target_date)][idx]["start"].strftime('%H:%M')
+        old_end = temporary_changes[str(target_date)][idx]["end"].strftime('%H:%M')
         temporary_changes[str(target_date)][idx]["start"] = new_start
         temporary_changes[str(target_date)][idx]["end"] = new_end
-        await message.answer(f"✅ Время обновлено: <b>{new_start.strftime('%H:%M')}-{new_end.strftime('%H:%M')}</b>",
-                             parse_mode=ParseMode.HTML)
         admin_context[message.from_user.id]["lesson"]["start"] = new_start
         admin_context[message.from_user.id]["lesson"]["end"] = new_end
+        log_admin_action(
+            message.from_user,
+            target_date,
+            f"изменил время пары «{temporary_changes[str(target_date)][idx]['name']}» "
+            f"с {old_start}-{old_end} на {new_start.strftime('%H:%M')}-{new_end.strftime('%H:%M')}"
+        )
+        await message.answer(
+            f"✅ Время обновлено: <b>{new_start.strftime('%H:%M')}-{new_end.strftime('%H:%M')}</b>",
+            parse_mode=ParseMode.HTML
+        )
     else:
         await message.answer("❌ Ошибка индекса")
+        await state.clear()
+        return
+
+    ctx["full_edit"] = False
+    admin_context[message.from_user.id] = ctx
     await state.clear()
-    await message.answer("Выберите действие:", reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx))
+    await message.answer(
+        "Пара полностью обновлена.",
+        reply_markup=get_lesson_edit_keyboard(week_type, day_name, idx)
+    )
 
 
 @dp.message(Command("cancel"))
 async def cancel_edit(message: Message, state: FSMContext):
+    ctx = admin_context.get(message.from_user.id, {})
+    ctx["full_edit"] = False
+    admin_context[message.from_user.id] = ctx
     await state.clear()
     await message.answer("❌ Редактирование отменено")
 
@@ -991,40 +1387,95 @@ async def cancel_edit(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("del_"))
 async def admin_delete_lesson(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_ID:
-        await callback.answer("❌ Доступ запрещён", show_alert=True);
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
         return
     parts = callback.data.split("_")
     if len(parts) < 4:
-        await callback.answer("❌ Ошибка", show_alert=True);
+        await callback.answer("❌ Ошибка", show_alert=True)
         return
-    week_type = parts[1];
-    day_name = parts[2];
+    week_type = parts[1]
+    day_name = parts[2]
     idx = int(parts[3])
     day_en = DAY_RU_TO_EN.get(day_name, day_name)
-    today = get_local_date();
-    target_date = None
-    for i in range(7):
-        check_date = today + timedelta(days=i)
-        if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
-            target_date = check_date;
-            break
-    if not target_date:
-        await callback.answer("❌ Не найдена дата", show_alert=True);
+
+    ctx = admin_context.get(callback.from_user.id, {})
+    target_date_str = ctx.get("target_date")
+
+    if not target_date_str:
+        today = get_local_date()
+        target_date = None
+        for i in range(7):
+            check_date = today + timedelta(days=i)
+            if check_date.strftime("%A") == day_en and get_week_type(check_date) == week_type:
+                target_date = check_date
+                break
+        if target_date is None:
+            await callback.answer("❌ Не найдена дата", show_alert=True)
+            return
+        target_date_str = target_date.isoformat()
+    else:
+        target_date = date.fromisoformat(target_date_str)
+
+    base_lessons = schedule.get(week_type, {}).get(day_en, [])
+    if idx >= len(base_lessons):
+        await callback.answer("❌ Ошибка", show_alert=True)
         return
-    lessons = schedule.get(week_type, {}).get(day_en, [])
-    if idx >= len(lessons):
-        await callback.answer("❌ Ошибка", show_alert=True);
-        return
+
     if str(target_date) not in temporary_changes:
-        base = schedule.get(week_type, {}).get(day_en, [])
-        temporary_changes[str(target_date)] = [l.copy() for l in base]
+        temporary_changes[str(target_date)] = [l.copy() for l in base_lessons]
+
     if idx < len(temporary_changes[str(target_date)]):
         deleted = temporary_changes[str(target_date)].pop(idx)
+        log_admin_action(
+            callback.from_user,
+            target_date,
+            f"удалил пару «{deleted['name']}» на {target_date.strftime('%d.%m.%Y')}"
+        )
         await callback.message.edit_text(
-            f"🗑️ Удалено: {deleted['name']}\nИзменения сбросятся после окончания времени пары.",
+            f"🗑️ Удалено на {target_date.strftime('%d.%m.%Y')}: {deleted['name']}\n"
+            f"Изменение временное и сбросится после окончания учебного дня.",
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="nav_days")]]))
+                inline_keyboard=[[InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")]]
+            )
+        )
         await callback.answer()
+    else:
+        await callback.answer("❌ Ошибка индекса", show_alert=True)
+
+
+# ======================
+# 📜 ИСТОРИЯ ДЕЙСТВИЙ АДМИНОВ
+# ======================
+@dp.callback_query(F.data == "adm_logs")
+async def adm_logs(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_ID:
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
+        return
+
+    def format_list(lst):
+        if not lst:
+            return "— нет записей —"
+        lines = []
+        for a in lst[-50:]:  # ограничим вывод
+            lines.append(
+                f"{a['timestamp']} — {a['admin_name']} {a['description']} "
+                f"(дата пары: {date.fromisoformat(a['date_str']).strftime('%d.%m.%Y')})"
+            )
+        return "\n".join(lines)
+
+    text = (
+        "<b>📜 История действий админов</b>\n\n"
+        "<b>Активные изменения:</b>\n"
+        f"{format_list(admin_actions_active)}\n\n"
+        "<b>Архив:</b>\n"
+        f"{format_list(admin_actions_archive)}"
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")]]
+    )
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
 
 
 # ======================
@@ -1036,17 +1487,15 @@ async def notifier():
         now = get_local_now()
         today = get_local_date()
         lessons = get_schedule(today)
-        
+
         for idx, lesson in enumerate(lessons):
-            # ✅ ПРОПУСКАЕМ уведомления если это окно (метка is_break)
             if lesson.get("is_break", False):
                 continue
-            
+
             start_dt = datetime.combine(today, lesson["start"])
             diff = (start_dt - now).total_seconds()
             lesson_key = f"{today}_{idx}"
-            
-            # ✅ Уведомляем только за 5 минут до НАЧАЛА УРОКА (не окна!)
+
             if 0 < diff <= 300 and lesson_key not in notified_lessons:
                 for user in subscribers:
                     try:
@@ -1059,10 +1508,10 @@ async def notifier():
                     except:
                         pass
                 notified_lessons.add(lesson_key)
-            
+
             elif diff < 0 and lesson_key in notified_lessons:
                 notified_lessons.discard(lesson_key)
-        
+
         await asyncio.sleep(60)
 
 
@@ -1072,31 +1521,38 @@ async def notifier():
 async def reset_changes():
     while True:
         now = get_local_now()
-        today = get_local_date()  # ✅ Было: date.today()
+        today = get_local_date()
+
+        # Ночью полный сброс служебных структур
         if now.hour == 0 and now.minute < 1:
-            temporary_changes.clear();
+            temporary_changes.clear()
             notified_lessons.clear()
+
         to_remove = []
-        for date_str, lessons in list(temporary_changes.items()):
+        for date_str, _lessons in list(temporary_changes.items()):
             try:
                 change_date = date.fromisoformat(date_str)
-                if change_date < today:
-                    to_remove.append(date_str);
-                    continue
-                if change_date == today:
-                    indices_to_remove = []
-                    for idx, lesson in enumerate(lessons):
-                        end_dt = datetime.combine(change_date, lesson["end"])
-                        if now > end_dt: indices_to_remove.append(idx)
-                    for idx in reversed(indices_to_remove):
-                        if idx < len(temporary_changes[date_str]):
-                            temporary_changes[date_str].pop(idx)
-                    if not temporary_changes[date_str]:
-                        to_remove.append(date_str)
-            except Exception as e:
+            except:
                 to_remove.append(date_str)
+                continue
+
+            if change_date < today:
+                to_remove.append(date_str)
+                continue
+
+            if change_date == today:
+                week_type = get_week_type(change_date)
+                day_en = change_date.strftime("%A")
+                base_lessons = schedule.get(week_type, {}).get(day_en, [])
+                if base_lessons:
+                    last_end = max(l["end"] for l in base_lessons)
+                    if now > datetime.combine(change_date, last_end):
+                        to_remove.append(date_str)
+
         for key in to_remove:
+            archive_actions_for_date(key)
             temporary_changes.pop(key, None)
+
         await asyncio.sleep(60)
 
 
@@ -1119,7 +1575,7 @@ async def debug_time(message: Message):
 
     server_now = datetime.now()
     bot_now = get_local_now()
-    moscow_now = datetime.now() + timedelta(hours=3)  # Примерное МСК
+    moscow_now = datetime.now() + timedelta(hours=3)
 
     await message.answer(
         f"🖥 Время сервера: <code>{server_now.strftime('%H:%M:%S')}</code>\n"
@@ -1132,7 +1588,6 @@ async def debug_time(message: Message):
 
 @dp.message(Command("getid"))
 async def get_thread_id(message: Message):
-    # Проверка на админа (чтобы обычные юзеры не спамили)
     if message.from_user.id not in ADMIN_ID:
         return
 
@@ -1144,9 +1599,7 @@ async def get_thread_id(message: Message):
         f"🧵 ID ветки: <code>{thread_id}</code>",
         parse_mode=ParseMode.HTML
     )
+
+
 if __name__ == "__main__":
-
     asyncio.run(main())
-
-
-
