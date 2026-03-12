@@ -19,7 +19,7 @@ from aiogram.enums import ChatType
 # ======================
 # ⚙ НАСТРОЙКИ
 # ======================
-TOKEN = "8628918090:AAE-WeIyeu8LVkIe5_LZDEbvfycleAzViB8"
+TOKEN = "8628918090:AAELRmJll0PEosBm9YmicX5P1oXcAsHx4U0"
 # 🔧 Впишите сюда ID админов
 ADMIN_ID = [1071264428, 7237228038, 5301082618]
 EVEN_WEEK_START = date(2026, 2, 9)
