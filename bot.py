@@ -21,7 +21,7 @@ from aiogram.enums import ChatType
 # ======================
 TOKEN = "8628918090:AAE-WeIyeu8LVkIe5_LZDEbvfycleAzViB8"
 # 🔧 Впишите сюда ID админов
-ADMIN_ID = [1071264428, 7237228038]
+ADMIN_ID = [1071264428, 7237228038, 5301082618]
 EVEN_WEEK_START = date(2026, 2, 9)
 SUBSCRIBERS_FILE = "subscribers.json"
 
@@ -31,7 +31,7 @@ TIMEZONE_OFFSET_HOURS = 3
 # ✅ ID ветки (None = работать везде, число = только в конкретной ветке)
 ALLOWED_THREAD_ID = 5
 
-# Список фраз
+# Список фраз для будней, когда пар нет
 NO_CLASSES_PHRASES = [
     "Сегодня пар больше нет 😎", "Можно отдыхать 💤", "Свободен 🎉",
     "Бро ватафа какие пары", "Этот пепе может спать спокойно",
@@ -42,6 +42,15 @@ NO_CLASSES_PHRASES = [
     "Не скажу", "У Вики спроси", "Напиши я гей, а я скину тебе сто рублей",
     "Извените а кто ваш любимый исполнитель?", "Я не ебу",
     "Меня крестил лично батюшка владимир",
+]
+
+# Отдельные фразы для выходных (суббота/воскресенье)
+WEEKEND_PHRASES = [
+    "Сегодня выходной 💤",
+    "Пар нет, сегодня можно ничего не делать 😎",
+    "Выходной день, отдохни как следует!",
+    "Сегодня занятий нет, наслаждайся свободой 🎉",
+    "Расписания нет — потому что выходной.",
 ]
 
 # ======================
@@ -229,7 +238,7 @@ dp = Dispatcher()
 
 
 # ======================
-# ✅ FIX #1: Время
+# ✅ Время
 # ======================
 def get_local_now():
     if TIMEZONE_OFFSET_HOURS != 0:
@@ -242,7 +251,7 @@ def get_local_date():
 
 
 # ======================
-# ✅ FIX #2: Ветки
+# ✅ Ветки
 # ======================
 def is_allowed_thread(message: Message) -> bool:
     if ALLOWED_THREAD_ID is None:
@@ -250,6 +259,22 @@ def is_allowed_thread(message: Message) -> bool:
     if message.is_topic_message and message.message_thread_id != ALLOWED_THREAD_ID:
         return False
     return True
+
+
+# ======================
+# ✅ Хелперы выходного
+# ======================
+def is_weekend(target_date: date | None = None) -> bool:
+    if target_date is None:
+        target_date = get_local_date()
+    # 5 = суббота, 6 = воскресенье
+    return target_date.weekday() >= 5
+
+
+def get_no_classes_phrase(target_date: date | None = None) -> str:
+    if is_weekend(target_date):
+        return random.choice(WEEKEND_PHRASES)
+    return random.choice(NO_CLASSES_PHRASES)
 
 
 # ======================
@@ -284,13 +309,9 @@ def archive_actions_for_date(date_str: str):
 
 
 # ======================
-# ✅ FIX #4: 100% ПРОВЕРКА АДМИНКИ + ТИП ЧАТА
+# ✅ Клавиатура
 # ======================
 def get_safe_keyboard(user_id: int, chat_type: str) -> ReplyKeyboardMarkup:
-    """
-    Клавиатура для юзера.
-    Админ-кнопка есть только у админов и только в личке.
-    """
     is_admin = user_id in ADMIN_ID
     is_private = chat_type == ChatType.PRIVATE
 
@@ -302,7 +323,7 @@ def get_safe_keyboard(user_id: int, chat_type: str) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="📚 Предметы")],
     ]
 
-    # ✅ Новая админ-кнопка, старая "⚙️ Управление расписанием" полностью убрана
+    # Новая админ-кнопка, старая "⚙️ Управление расписанием" полностью убрана
     if is_admin and is_private:
         buttons.insert(0, [KeyboardButton(text="🛠 Админ расписание")])
 
@@ -313,7 +334,6 @@ def get_safe_keyboard(user_id: int, chat_type: str) -> ReplyKeyboardMarkup:
 # 🔘 ОСТАЛЬНЫЕ КЛАВИАТУРЫ
 # ======================
 def get_week_select_keyboard():
-    # Используется только из админ-панели по inline-кнопкам
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Чётная неделя", callback_data="week_even"),
          InlineKeyboardButton(text="Нечётная неделя", callback_data="week_odd")],
@@ -335,7 +355,6 @@ def get_days_keyboard():
 
 
 def get_lessons_keyboard(lessons, week_type, day_name):
-    # week_type: "even"/"odd" или реальный тип недели, day_name: русское имя дня
     keyboard = []
     for idx, lesson in enumerate(lessons):
         short_name = (lesson["name"][:25] + "..") if len(lesson["name"]) > 25 else lesson["name"]
@@ -395,8 +414,11 @@ def get_schedule(target_date=None):
     week_type = get_week_type(target_date)
     day_name = target_date.strftime("%A")
     base = schedule.get(week_type, {}).get(day_name, [])
-    temp = temporary_changes.get(str(target_date), [])
-    return temp if temp else base
+    key = str(target_date)
+    # Если для даты есть временные изменения, возвращаем их (даже если список пустой — день может быть "удалён")
+    if key in temporary_changes:
+        return temporary_changes[key]
+    return base
 
 
 def get_all_subjects():
@@ -528,6 +550,7 @@ async def current_class(message: Message):
         return
 
     status, lesson = get_current_class()
+    today = get_local_date()
 
     if status == "ongoing":
         text = f"🟢 Сейчас идёт:\n<b>{lesson['name']}</b>\n🚪 {lesson['room']}\n👨‍🏫 {lesson['teacher']}"
@@ -544,7 +567,7 @@ async def current_class(message: Message):
             f"👨‍🏫 {lesson['teacher']}"
         )
     else:
-        text = random.choice(NO_CLASSES_PHRASES)
+        text = get_no_classes_phrase(today)
 
     await message.answer(text, parse_mode=ParseMode.HTML)
 
@@ -554,16 +577,16 @@ async def today_schedule(message: Message):
     if not is_allowed_thread(message):
         return
 
-    lessons = get_schedule(get_local_date())
+    today = get_local_date()
+    lessons = get_schedule(today)
 
     if not lessons:
-        await message.answer(random.choice(NO_CLASSES_PHRASES))
+        await message.answer(get_no_classes_phrase(today))
         return
 
     lessons_sorted = sorted(lessons, key=lambda x: x["start"])
 
     text = "<b>📖 Сегодня:</b>\n"
-    today = get_local_date()
 
     for i, lesson in enumerate(lessons_sorted):
         text += f"⏰ {lesson['start'].strftime('%H:%M')}–{lesson['end'].strftime('%H:%M')}\n"
@@ -593,7 +616,7 @@ async def tomorrow_schedule(message: Message):
     lessons = get_schedule(tomorrow)
 
     if not lessons:
-        await message.answer(random.choice(NO_CLASSES_PHRASES))
+        await message.answer(get_no_classes_phrase(tomorrow))
         return
 
     lessons_sorted = sorted(lessons, key=lambda x: x["start"])
@@ -807,33 +830,38 @@ async def show_admin_day(callback: CallbackQuery, target_date: date):
         "target_date": date_str
     }
 
-    if not lessons:
-        text = (
-            f"<b>{format_week_info(target_date)}</b>\n\n"
-            "❌ В этот день нет пар."
-        )
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")]]
-        )
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-        await callback.answer()
-        return
-
-    lessons_sorted = sorted(lessons, key=lambda x: x["start"])
     kb = []
-    for idx, lesson in enumerate(lessons_sorted):
-        short_name = (lesson["name"][:25] + "..") if len(lesson["name"]) > 25 else lesson["name"]
-        cb = f"adm_lesson_{date_str}_{idx}"
-        kb.append([InlineKeyboardButton(text=f"{short_name} ({lesson['start'].strftime('%H:%M')})", callback_data=cb)])
 
-    # Кнопка сброса всех изменений дня, если для этой даты есть временные изменения
+    if lessons:
+        lessons_sorted = sorted(lessons, key=lambda x: x["start"])
+        for idx, lesson in enumerate(lessons_sorted):
+            short_name = (lesson["name"][:25] + "..") if len(lesson["name"]) > 25 else lesson["name"]
+            cb = f"adm_lesson_{date_str}_{idx}"
+            kb.append([InlineKeyboardButton(text=f"{short_name} ({lesson['start'].strftime('%H:%M')})", callback_data=cb)])
+    else:
+        # если уже удалили все пары – просто не добавляем уроки
+        pass
+
+    # Кнопка: удалить все пары выбранного дня (временное удаление)
+    kb.append([InlineKeyboardButton(text="❌ Удалить все пары этого дня", callback_data=f"adm_delday_{date_str}")])
+
+    # Кнопка сброса всех изменений дня, если есть временные изменения
     if date_str in temporary_changes:
         kb.append([InlineKeyboardButton(text="🔄 Сбросить все изменения дня", callback_data=f"adm_reset_{date_str}")])
 
     kb.append([InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")])
 
-    text = f"<b>{format_week_info(target_date)}</b>\n\nВыберите пару для редактирования:"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode=ParseMode.HTML)
+    header = f"<b>{format_week_info(target_date)}</b>\n\n"
+    if lessons:
+        header += "Выберите пару для редактирования или действие с днём:"
+    else:
+        header += "На этот день сейчас нет пар (либо день был временно очищен)."
+
+    await callback.message.edit_text(
+        header,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode=ParseMode.HTML
+    )
     await callback.answer()
 
 
@@ -868,8 +896,6 @@ async def adm_select_lesson_by_date(callback: CallbackQuery):
 
     lesson = lessons[idx]
 
-    # Обновляем контекст
-    prev_ctx = admin_context.get(callback.from_user.id, {})
     ctx = {
         "week_type": week_type,
         "day_name": day_ru,
@@ -923,8 +949,43 @@ async def adm_reset_day(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data.startswith("adm_delday_"))
+async def adm_delete_full_day(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_ID:
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
+        return
+
+    date_str = callback.data.replace("adm_delday_", "")
+    try:
+        target_date = date.fromisoformat(date_str)
+    except:
+        await callback.answer("❌ Неверная дата", show_alert=True)
+        return
+
+    # временно удаляем все пары этого дня
+    temporary_changes[date_str] = []
+    log_admin_action(
+        callback.from_user,
+        target_date,
+        f"временно удалил все пары на {target_date.strftime('%d.%m.%Y')}"
+    )
+
+    await callback.message.edit_text(
+        f"❌ Все пары на {target_date.strftime('%d.%m.%Y')} временно удалены.\n"
+        f"Изменение сбросится после окончания учебного дня.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Сбросить изменения дня", callback_data=f"adm_reset_{date_str}")],
+                [InlineKeyboardButton(text="🔙 В админ-меню", callback_data="adm_back_main")],
+            ]
+        ),
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+
 # ======================
-# ⚙️ СТАРЫЙ БЛОК АДМИН-НЕДЕЛИ (ИСПОЛЬЗУЕТСЯ ДЛЯ ЧЁТ/НЕЧЁТ)
+# ⚙️ СТАРЫЙ БЛОК АДМИН-НЕДЕЛИ (ЧЁТ/НЕЧЁТ)
 # ======================
 @dp.callback_query(F.data.startswith("week_"))
 async def admin_select_week(callback: CallbackQuery):
@@ -951,7 +1012,6 @@ async def admin_select_day(callback: CallbackQuery):
         await callback.answer("❌ Нет пар в этот день", show_alert=True)
         return
 
-    # Находим ближайшую дату с такой неделей и днём
     today = get_local_date()
     target_date = None
     for i in range(7):
@@ -999,7 +1059,6 @@ async def admin_select_lesson(callback: CallbackQuery):
     target_date_str = prev_ctx.get("target_date")
 
     if not target_date_str:
-        # На всякий случай вычисляем дату, если не была сохранена
         today = get_local_date()
         target_date = None
         for i in range(7):
@@ -1010,6 +1069,8 @@ async def admin_select_lesson(callback: CallbackQuery):
         if target_date is None:
             target_date = today
         target_date_str = target_date.isoformat()
+    else:
+        target_date = date.fromisoformat(target_date_str)
 
     admin_context[callback.from_user.id] = {
         "week_type": week_type,
@@ -1138,13 +1199,13 @@ async def save_name(message: Message, state: FSMContext):
 
     target_date = date.fromisoformat(target_date_str)
 
-    if str(target_date) not in temporary_changes:
+    if target_date_str not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
-        temporary_changes[str(target_date)] = [l.copy() for l in base]
+        temporary_changes[target_date_str] = [l.copy() for l in base]
 
-    if idx < len(temporary_changes[str(target_date)]):
-        old_name = temporary_changes[str(target_date)][idx]["name"]
-        temporary_changes[str(target_date)][idx]["name"] = message.text
+    if idx < len(temporary_changes[target_date_str]):
+        old_name = temporary_changes[target_date_str][idx]["name"]
+        temporary_changes[target_date_str][idx]["name"] = message.text
         admin_context[message.from_user.id]["lesson"]["name"] = message.text
         log_admin_action(
             message.from_user,
@@ -1200,13 +1261,13 @@ async def save_room(message: Message, state: FSMContext):
 
     target_date = date.fromisoformat(target_date_str)
 
-    if str(target_date) not in temporary_changes:
+    if target_date_str not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
-        temporary_changes[str(target_date)] = [l.copy() for l in base]
+        temporary_changes[target_date_str] = [l.copy() for l in base]
 
-    if idx < len(temporary_changes[str(target_date)]):
-        old_room = temporary_changes[str(target_date)][idx]["room"]
-        temporary_changes[str(target_date)][idx]["room"] = message.text
+    if idx < len(temporary_changes[target_date_str]):
+        old_room = temporary_changes[target_date_str][idx]["room"]
+        temporary_changes[target_date_str][idx]["room"] = message.text
         admin_context[message.from_user.id]["lesson"]["room"] = message.text
         log_admin_action(
             message.from_user,
@@ -1263,13 +1324,13 @@ async def save_teacher(message: Message, state: FSMContext):
 
     target_date = date.fromisoformat(target_date_str)
 
-    if str(target_date) not in temporary_changes:
+    if target_date_str not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
-        temporary_changes[str(target_date)] = [l.copy() for l in base]
+        temporary_changes[target_date_str] = [l.copy() for l in base]
 
-    if idx < len(temporary_changes[str(target_date)]):
-        old_t = temporary_changes[str(target_date)][idx]["teacher"]
-        temporary_changes[str(target_date)][idx]["teacher"] = message.text
+    if idx < len(temporary_changes[target_date_str]):
+        old_t = temporary_changes[target_date_str][idx]["teacher"]
+        temporary_changes[target_date_str][idx]["teacher"] = message.text
         admin_context[message.from_user.id]["lesson"]["teacher"] = message.text
         log_admin_action(
             message.from_user,
@@ -1337,21 +1398,21 @@ async def save_time(message: Message, state: FSMContext):
 
     target_date = date.fromisoformat(target_date_str)
 
-    if str(target_date) not in temporary_changes:
+    if target_date_str not in temporary_changes:
         base = schedule.get(week_type, {}).get(day_en, [])
-        temporary_changes[str(target_date)] = [l.copy() for l in base]
+        temporary_changes[target_date_str] = [l.copy() for l in base]
 
-    if idx < len(temporary_changes[str(target_date)]):
-        old_start = temporary_changes[str(target_date)][idx]["start"].strftime('%H:%M')
-        old_end = temporary_changes[str(target_date)][idx]["end"].strftime('%H:%M')
-        temporary_changes[str(target_date)][idx]["start"] = new_start
-        temporary_changes[str(target_date)][idx]["end"] = new_end
+    if idx < len(temporary_changes[target_date_str]):
+        old_start = temporary_changes[target_date_str][idx]["start"].strftime('%H:%M')
+        old_end = temporary_changes[target_date_str][idx]["end"].strftime('%H:%M')
+        temporary_changes[target_date_str][idx]["start"] = new_start
+        temporary_changes[target_date_str][idx]["end"] = new_end
         admin_context[message.from_user.id]["lesson"]["start"] = new_start
         admin_context[message.from_user.id]["lesson"]["end"] = new_end
         log_admin_action(
             message.from_user,
             target_date,
-            f"изменил время пары «{temporary_changes[str(target_date)][idx]['name']}» "
+            f"изменил время пары «{temporary_changes[target_date_str][idx]['name']}» "
             f"с {old_start}-{old_end} на {new_start.strftime('%H:%M')}-{new_end.strftime('%H:%M')}"
         )
         await message.answer(
@@ -1382,7 +1443,7 @@ async def cancel_edit(message: Message, state: FSMContext):
 
 
 # ======================
-# 🗑️ УДАЛЕНИЕ
+# 🗑️ УДАЛЕНИЕ ОДНОЙ ПАРЫ
 # ======================
 @dp.callback_query(F.data.startswith("del_"))
 async def admin_delete_lesson(callback: CallbackQuery):
@@ -1421,11 +1482,11 @@ async def admin_delete_lesson(callback: CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
         return
 
-    if str(target_date) not in temporary_changes:
-        temporary_changes[str(target_date)] = [l.copy() for l in base_lessons]
+    if target_date_str not in temporary_changes:
+        temporary_changes[target_date_str] = [l.copy() for l in base_lessons]
 
-    if idx < len(temporary_changes[str(target_date)]):
-        deleted = temporary_changes[str(target_date)].pop(idx)
+    if idx < len(temporary_changes[target_date_str]):
+        deleted = temporary_changes[target_date_str].pop(idx)
         log_admin_action(
             callback.from_user,
             target_date,
@@ -1456,7 +1517,7 @@ async def adm_logs(callback: CallbackQuery):
         if not lst:
             return "— нет записей —"
         lines = []
-        for a in lst[-50:]:  # ограничим вывод
+        for a in lst[-50:]:
             lines.append(
                 f"{a['timestamp']} — {a['admin_name']} {a['description']} "
                 f"(дата пары: {date.fromisoformat(a['date_str']).strftime('%d.%m.%Y')})"
@@ -1516,37 +1577,39 @@ async def notifier():
 
 
 # ======================
-# 🔄 АВТОСБРОС
+# 🔄 АВТОСБРОС ТОЛЬКО ПОСЛЕ ОКОНЧАНИЯ ПАР
 # ======================
 async def reset_changes():
     while True:
         now = get_local_now()
         today = get_local_date()
 
-        # Ночью полный сброс служебных структур
-        if now.hour == 0 and now.minute < 1:
-            temporary_changes.clear()
-            notified_lessons.clear()
-
         to_remove = []
-        for date_str, _lessons in list(temporary_changes.items()):
+
+        for date_str in list(temporary_changes.keys()):
             try:
                 change_date = date.fromisoformat(date_str)
-            except:
+            except Exception:
                 to_remove.append(date_str)
                 continue
 
+            # если день с изменениями уже в прошлом — просто убираем
             if change_date < today:
                 to_remove.append(date_str)
                 continue
 
+            # если это сегодня — ждём окончания последней пары базового расписания
             if change_date == today:
                 week_type = get_week_type(change_date)
                 day_en = change_date.strftime("%A")
                 base_lessons = schedule.get(week_type, {}).get(day_en, [])
+
                 if base_lessons:
-                    last_end = max(l["end"] for l in base_lessons)
-                    if now > datetime.combine(change_date, last_end):
+                    last_end = max(lesson["end"] for lesson in base_lessons)
+                    last_end_dt = datetime.combine(change_date, last_end)
+
+                    # сбрасываем все временные изменения, ТОЛЬКО когда прошла последняя пара
+                    if now > last_end_dt:
                         to_remove.append(date_str)
 
         for key in to_remove:
