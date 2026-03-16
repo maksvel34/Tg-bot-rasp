@@ -38,7 +38,7 @@ NO_CLASSES_PHRASES = [
     "Время есть иди готовь две в сырном", "Сіз қаншықсыз очпочмак сізге жете алмайсыз",
     "Мама разрешила не идти", "Иди домой, пары закончились",
     "На сегодня всё, отдыхай", "Пар нет, наслаждайся жизнью",
-    "А сам чекнуть не можешь?", "Заходят как то два дракона в бар. Один спрашивает другого: Почему здесь так жарко? -Ебало завали.",
+    "Пар нет, а Скитейкин лох", "А сам чекнуть не можешь?", "Заходят как то два дракона в бар. Один спрашивает другого: Почему здесь так жарко? -Ебало завали.",
     "Не скажу", "У Вики спроси", "Напиши я гей, а я скину тебе сто рублей",
     "Извените а кто ваш любимый исполнитель?", "Я не ебу",
     "Меня крестил лично батюшка владимир",
@@ -46,7 +46,11 @@ NO_CLASSES_PHRASES = [
 
 # Отдельные фразы для выходных (суббота/воскресенье)
 WEEKEND_PHRASES = [
-    "Выходной балам успокойся",
+    "Сегодня выходной 💤",
+    "Пар нет, сегодня можно ничего не делать 😎",
+    "Выходной день, отдохни как следует!",
+    "Сегодня занятий нет, наслаждайся свободой 🎉",
+    "Расписания нет — потому что выходной.",
 ]
 
 # ======================
@@ -1025,9 +1029,32 @@ async def admin_select_day(callback: CallbackQuery):
         "target_date": target_date.isoformat()
     }
 
+    # ✅ Добавляем действия с днём (как в режиме "Сегодня/Завтра")
+    date_str = target_date.isoformat()
+    keyboard = []
+
+    for idx, lesson in enumerate(lessons):
+        short_name = (lesson["name"][:25] + "..") if len(lesson["name"]) > 25 else lesson["name"]
+        callback_data = f"lesson_{week_type}_{day_ru}_{idx}"
+        if len(callback_data.encode("utf-8")) > 64:
+            callback_data = f"lsn_{week_type[:3]}_{day_ru[:3]}_{idx}"
+        callback_data = callback_data[:64]
+        keyboard.append([InlineKeyboardButton(text=f"{short_name} ({lesson['start']})", callback_data=callback_data)])
+
+    keyboard.append(
+        [InlineKeyboardButton(text="❌ Удалить все пары этого дня", callback_data=f"adm_delday_{date_str}")]
+    )
+
+    if date_str in temporary_changes:
+        keyboard.append(
+            [InlineKeyboardButton(text="🔄 Сбросить все изменения дня", callback_data=f"adm_reset_{date_str}")]
+        )
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="nav_week")])
+
     await callback.message.edit_text(
-        f"📚 {day_ru} ({week_type}): выберите пару для редактирования",
-        reply_markup=get_lessons_keyboard(lessons, week_type, day_ru)
+        f"📚 {day_ru} ({week_type}): выберите пару для редактирования или действие с днём",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
     await callback.answer()
 
